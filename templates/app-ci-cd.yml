@@ -4,8 +4,7 @@
 #
 # 수정할 부분:
 #   1. app-name: 앱 이름 (ECR 리포지토리 이름이 됨)
-#   2. developer: 본인 이름 (k8s/apps/{developer} 디렉토리)
-#   3. test job: 본인 언어/프레임워크에 맞게 수정
+#   2. test job: 본인 언어/프레임워크에 맞게 수정
 # =============================================================================
 
 name: CI/CD
@@ -66,5 +65,4 @@ jobs:
     uses: jb-wooricapital/shared-workflows/.github/workflows/build-deploy.yml@main
     with:
       app-name: my-ai-app        # TODO: 앱 이름으로 변경
-      developer: developer-a     # TODO: 본인 이름으로 변경
     secrets: inherit

@@ -6,7 +6,6 @@
 #       uses: jb-wooricapital/shared-workflows/.github/workflows/build-deploy.yml@main
 #       with:
 #         app-name: my-ai-app
-#         developer: developer-a
 #       secrets: inherit
 
 name: Build & Deploy
@@ -16,10 +15,6 @@ on:
     inputs:
       app-name:
         description: "애플리케이션 이름 (K8s deployment name)"
-        required: true
-        type: string
-      developer:
-        description: "개발자 이름 (k8s/apps/{developer} 디렉토리)"
         required: true
         type: string
       dockerfile:
@@ -102,7 +97,7 @@ jobs:
           script: |
             const owner = 'jb-wooricapital';
             const repo = 'playground-deploy';
-            const path = `k8s/apps/${{ inputs.developer }}/${{ inputs.app-name }}/values.yaml`;
+            const path = `k8s/apps/${{ inputs.app-name }}/values.yaml`;
             const tag = '${{ steps.tag.outputs.tag }}';
             const image = `${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ inputs.app-name }}`;
 
@@ -128,7 +123,7 @@ jobs:
               owner,
               repo,
               path,
-              message: `deploy(${inputs.app-name}): update image tag to ${tag}`,
+              message: `deploy(${{ inputs.app-name }}): update image tag to ${tag}`,
               content: Buffer.from(updatedContent).toString('base64'),
               sha: currentFile.data.sha,
               committer: {
