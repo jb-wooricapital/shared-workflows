@@ -14,13 +14,11 @@ AI Playground 공통 GitHub Actions 워크플로우
 
 ```yaml
 # app-name: ECR 리포지토리 이름이 됩니다
-# developer: k8s/apps/{developer} 디렉토리명
 
 deploy:
   uses: jb-wooricapital/shared-workflows/.github/workflows/build-deploy.yml@main
   with:
     app-name: my-ai-app        # 앱 이름으로 변경
-    developer: developer-a     # 본인 이름으로 변경
   secrets: inherit
 ```
 

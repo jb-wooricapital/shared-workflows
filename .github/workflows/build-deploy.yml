@@ -31,7 +31,8 @@ on:
 env:
   AWS_REGION: ap-northeast-2
   AWS_ACCOUNT_ID: "106083617966"
-  GITOPS_REPO: jb-wooricapital/playground-deploy
+  GITOPS_OWNER: jb-wooricapital
+  GITOPS_REPO: playground-deploy
 
 jobs:
   build-and-deploy:
@@ -49,7 +50,7 @@ jobs:
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: arn:aws:iam::106083617966:role/playground-github-actions-role
+          role-to-assume: arn:aws:iam::${{ env.AWS_ACCOUNT_ID }}:role/playground-github-actions-role
           aws-region: ${{ env.AWS_REGION }}
 
       # 3. ECR 로그인
@@ -95,8 +96,8 @@ jobs:
         with:
           github-token: ${{ secrets.GITOPS_PAT }}
           script: |
-            const owner = 'jb-wooricapital';
-            const repo = 'playground-deploy';
+            const owner = '${{ env.GITOPS_OWNER }}';
+            const repo = '${{ env.GITOPS_REPO }}';
             const path = `k8s/apps/${{ inputs.app-name }}/values.yaml`;
             const tag = '${{ steps.tag.outputs.tag }}';
             const image = `${{ env.AWS_ACCOUNT_ID }}.dkr.ecr.${{ env.AWS_REGION }}.amazonaws.com/${{ inputs.app-name }}`;
