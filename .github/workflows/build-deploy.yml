@@ -58,7 +58,7 @@ jobs:
         id: ecr-login
         uses: aws-actions/amazon-ecr-login@v2
 
-      # 4. ECR 리포지토리 생성 (없으면)
+      # 4. ECR 리포지토리 생성 (없으면) + Lifecycle Policy 적용
       - name: Create ECR repository if not exists
         run: |
           aws ecr describe-repositories \
@@ -68,6 +68,36 @@ jobs:
             --repository-name ${{ inputs.app-name }} \
             --region ${{ env.AWS_REGION }} \
             --image-scanning-configuration scanOnPush=true
+
+          # Lifecycle Policy: untagged 7일 후 삭제, 태그된 이미지 최근 10개만 유지
+          aws ecr put-lifecycle-policy \
+            --repository-name ${{ inputs.app-name }} \
+            --region ${{ env.AWS_REGION }} \
+            --lifecycle-policy-text '{
+              "rules": [
+                {
+                  "rulePriority": 1,
+                  "description": "Expire untagged images after 7 days",
+                  "selection": {
+                    "tagStatus": "untagged",
+                    "countType": "sinceImagePushed",
+                    "countUnit": "days",
+                    "countNumber": 7
+                  },
+                  "action": { "type": "expire" }
+                },
+                {
+                  "rulePriority": 2,
+                  "description": "Keep last 10 tagged images",
+                  "selection": {
+                    "tagStatus": "any",
+                    "countType": "imageCountMoreThan",
+                    "countNumber": 10
+                  },
+                  "action": { "type": "expire" }
+                }
+              ]
+            }'
 
       # 5. 이미지 태그 생성 (short SHA)
       - name: Generate image tag
