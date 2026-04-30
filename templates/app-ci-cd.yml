@@ -57,7 +57,7 @@ jobs:
 
   # ============================================
   # 1.5단계: Semgrep SAST (공통 - 수정 불필요)
-  # 언어/프레임워크별 룰셋은 사내 컨벤션 (playground-infra/docs/cicd-conventions.md)
+  # 언어/프레임워크별 룰셋은 사내 컨벤션 (shared-workflows/docs/cicd-conventions.md)
   # 참조해서 stack. `--config auto` fallback 도 가능.
   # ============================================
   semgrep:
