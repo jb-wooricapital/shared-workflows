@@ -66,3 +66,28 @@ jobs:
     with:
       app-name: my-ai-app        # TODO: 앱 이름으로 변경
     secrets: inherit
+
+  # ============================================
+  # [모노레포 케이스] 한 레포에 BE + FE 같이 있는 경우
+  # 위의 `deploy` 하나 대신 아래처럼 job 을 앱 단위로 분리.
+  # 매핑 원칙: 1 ECR repo = 1 K8s app = 1 values.yaml = 1 Dockerfile
+  # ============================================
+  # deploy-api:
+  #   needs: test
+  #   if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+  #   uses: jb-wooricapital/shared-workflows/.github/workflows/build-deploy.yml@main
+  #   with:
+  #     app-name: myproject-api
+  #     dockerfile: ./backend/Dockerfile
+  #     context: ./backend
+  #   secrets: inherit
+  #
+  # deploy-web:
+  #   needs: test
+  #   if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+  #   uses: jb-wooricapital/shared-workflows/.github/workflows/build-deploy.yml@main
+  #   with:
+  #     app-name: myproject-web
+  #     dockerfile: ./frontend/Dockerfile
+  #     context: ./frontend
+  #   secrets: inherit
