@@ -56,46 +56,60 @@ You are setting up the standard playground CI/CD for the current repo. Two trigg
 
 기본값은 모두 추정하고 진행.
 
-### 4) 템플릿 가져오기
+### 4) 템플릿 가져오기 + 채우기
 
 shared-workflows 의 템플릿 3종이 canonical:
-- `templates/app-ci-cd.yml` — PR + main 머지 (모든 케이스)
+- `templates/app-ci-cd.yml` — PR + main 머지 (모든 case). **inline 버전** — reusable workflow 호출 안 함, AWS/ECR step 다 들어있음
 - `templates/safeimport-release.yml` — 운영 반입 (단일 컴포넌트)
 - `templates/safeimport-release-monorepo.yml` — 운영 반입 (매트릭스, phase 2 의존)
 
-로컬 clone (`workspaces/jb-wooricapital/shared-workflows/`) 또는 GitHub raw URL 에서 가져오기.
+shared-workflows repo 가 **Private** 이라 dev 가 액세스 권한 있어야 함. 보통:
+- 로컬 clone (`workspaces/jb-wooricapital/shared-workflows/`) 에서 직접 읽기 (권장)
+- 또는 dev 의 GitHub auth 로 raw URL fetch
 
 **단일 컴포넌트 (A)**: 두 템플릿 (app-ci-cd + safeimport-release) 그대로 가져와서:
-- `app-name: my-ai-app` → 감지/확정한 앱 이름
+- 상단 `env:` 블록의 `APP_NAME` → 감지한 앱 이름 (소문자+하이픈)
+- `DOCKERFILE` / `BUILD_CONTEXT` → Dockerfile 위치 (단일이면 그대로)
 - semgrep job 의 `--config` 들 → 위 2) 에서 결정한 stack 으로 추가
 - 테스트 job 의 `echo "테스트를 여기에 추가하세요"` → 감지한 명령
 
 **모노레포 (B)**: app-ci-cd.yml 을 다음과 같이 변환:
-- 단일 `deploy:` job 을 컴포넌트당 분기 (`deploy-{component}:`):
+- 단일 `deploy:` job 을 컴포넌트당 복제 (`deploy-{component}:`). 각 job 의 step 은 동일하고 `env:` 의 APP_NAME / DOCKERFILE / BUILD_CONTEXT 만 다름:
   ```yaml
   deploy-backend:
     needs: [test, semgrep]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    uses: jb-wooricapital/shared-workflows/.github/workflows/build-deploy.yml@main
-    with:
-      app-name: {repo}-backend
-      dockerfile: ./backend/Dockerfile
-      context: ./backend
-    secrets: inherit
-  deploy-frontend:
-    needs: [test, semgrep]
-    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    uses: jb-wooricapital/shared-workflows/.github/workflows/build-deploy.yml@main
-    with:
-      app-name: {repo}-frontend
-      dockerfile: ./frontend/Dockerfile
-      context: ./frontend
-    secrets: inherit
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write
+      contents: read
+    env:
+      APP_NAME: {repo}-backend
+      DOCKERFILE: ./backend/Dockerfile
+      BUILD_CONTEXT: ./backend
+    steps:
+      # ... deploy job 의 모든 step 그대로 (Configure AWS / ECR login / build / Trivy / push / GitOps update) ...
   ```
 - 운영 반입 모드:
-  - `one` → `safeimport-release.yml` 을 가져와 build 명령의 path 만 `./{선택한_컴포넌트}` 로 수정
+  - `one` → `safeimport-release.yml` 을 가져와 build context 를 `./{선택한_컴포넌트}` 로 수정
   - `all` → `safeimport-release-monorepo.yml` 을 가져와 matrix entries 를 발견한 컴포넌트로 채움
   - `none` → release 워크플로 안 깖
+
+### 4.5) AWS Variables 안내 (★ 첫 셋업 시)
+
+inline 워크플로가 동작하려면 다음 GitHub **Org-level Variables** 가 필요. dev 의 첫 호출 시 안내:
+
+```
+vars.AWS_REGION        예: ap-northeast-2
+vars.AWS_ACCOUNT_ID    AWS 계정 12자리
+vars.ECR_ROLE          OIDC IAM role (예: playground-github-actions-role)
+vars.GITOPS_OWNER      jb-wooricapital
+vars.GITOPS_REPO       playground-deploy
+
+secrets.GITOPS_PAT     playground-deploy 쓰기 권한 PAT
+```
+
+이게 Org level 에 설정되어 있어야 모든 caller repo 가 자동 상속. **신규 repo 라도 platform 팀이 한 번만 Org Variables 설정해두면 dev 별도 작업 X**. 이미 설정된 사내라면 이 단계 skip — 사용자에게 "기존 사내 Variables 확인됐다고 가정한다" 안내만 하고 진행.
 
 ### 5) 파일 쓰기
 
@@ -138,9 +152,33 @@ image.tar / image.digest / trivy.json / semgrep.json / sbom.cdx.json
 
 ## 호출 인터페이스
 
-사용자가 `/safeimport-cicd` 또는 자연어 ("playground CI/CD 깔아줘", "SafeImport 호환 CI/CD 셋업해줘") → 이 skill 이 위 절차 수행.
+### 신규 셋업 모드 (default)
 
-이미 워크플로 있는 repo 면 "현재 워크플로 분석해서 사내 표준 호환 검토" 모드로 — 누락된 것 (Semgrep, safeimport-release 등) 보강 PR 제안.
+사용자가 `/safeimport-cicd` 또는 자연어 ("playground CI/CD 깔아줘", "SafeImport 호환 CI/CD 셋업해줘") → 위 절차 1)~6) 수행.
+
+기존 `.github/workflows/` 가 비어있거나 없으면 신규 셋업.
+
+### Update 모드 (`/safeimport-cicd update` 또는 "CI/CD 업그레이드")
+
+기존 워크플로가 이미 있는 repo 에서 호출. 이건 inline 워크플로 패턴의 trade-off 를 보완하는 핵심 기능 — shared-workflows 에서 템플릿이 bump 됐을 때 dev 가 한 줄로 자기 repo 도 따라가게 함.
+
+절차:
+1. 현재 `.github/workflows/{ci-cd.yml,safeimport-release.yml}` 를 읽음
+2. shared-workflows/templates/ 의 최신 템플릿 가져옴
+3. **diff 계산** — 어떤 step 이 추가/변경/삭제됐는지
+4. 사용자에게 표로 보여줌:
+   ```
+   변경사항:
+   ✓ Trivy step 의 severity 가 CRITICAL,HIGH 에서 CRITICAL,HIGH,MEDIUM 으로 변경
+   ✓ semgrep job 에 p/dockerfile 룰셋 추가
+   + (신규) PDB lint step
+   ```
+5. dev 의 커스터마이징 보존 — env 의 APP_NAME, 테스트 명령, 추가 semgrep config 등은 그대로 유지하고 platform 표준 부분만 갱신
+6. 머지 PR 생성 (또는 stdout 으로 diff 만 보여주고 dev 가 직접 적용)
+
+모노레포 케이스도 동일하게 동작 — 컴포넌트당 deploy job 보존하고 step 만 갱신.
+
+기존 워크플로가 너무 오래된 (deprecated reusable workflow `uses: ...build-deploy.yml@main` 호출하던 옛 버전) 케이스: skill 이 그 사실 감지하고 "fully replace" 모드 제안 — 옛 워크플로 백업 후 새 inline 버전으로 교체.
 
 ## 관련 자료
 

@@ -1,13 +1,29 @@
 # =============================================================================
-# 앱 레포 CI/CD 템플릿
+# 앱 레포 CI/CD 템플릿 (자급자족 inline 버전)
 # 이 파일을 앱 레포의 .github/workflows/ci-cd.yml 에 복사하세요.
 #
 # 수정할 부분:
-#   1. app-name: 앱 이름 (ECR 리포지토리 이름이 됨)
-#   2. test job: 본인 언어/프레임워크에 맞게 수정
+#   1. APP_NAME env: 앱 이름 (ECR 리포지토리 이름이 됨)
+#   2. DOCKERFILE / BUILD_CONTEXT: 모노레포면 컴포넌트 path. 단일이면 그대로
+#   3. test job: 본인 언어/프레임워크에 맞게 수정
+#
+# 사전 요구사항 (Org Variables 로 미리 등록 — platform 팀 작업):
+#   vars.AWS_REGION         예: ap-northeast-2
+#   vars.AWS_ACCOUNT_ID     AWS account ID (12 자리)
+#   vars.ECR_ROLE           OIDC IAM role 이름 (예: playground-github-actions-role)
+#   vars.GITOPS_OWNER       playground-deploy 의 org (예: jb-wooricapital)
+#   vars.GITOPS_REPO        GitOps 레포 이름 (예: playground-deploy)
+#
+# 사전 요구사항 (앱 레포의 Secrets):
+#   secrets.GITOPS_PAT      playground-deploy 쓰기 권한 PAT (Org Secret 으로 일괄 부여 권장)
 # =============================================================================
 
 name: CI/CD
+
+env:
+  APP_NAME: my-ai-app                       # TODO: 앱 이름으로 변경 (모노레포면 deploy job 별로 별도 env 사용)
+  DOCKERFILE: ./Dockerfile                  # 단일. 모노레포면 ./backend/Dockerfile 등
+  BUILD_CONTEXT: .                          # 단일. 모노레포면 ./backend 등
 
 on:
   push:
@@ -82,38 +98,165 @@ jobs:
           # 정책 완화 (ERROR 만 fail) 는 `--severity ERROR --error`.
 
   # ============================================
-  # 2단계: 빌드 & 배포 (공통 - 수정 불필요)
-  # main 브랜치 push 시에만 실행
+  # 2단계: 빌드 + ECR push + GitOps 갱신
+  # main 머지 시에만 실행. 한 job 에 다 inline (reusable workflow 안 씀).
   # ============================================
   deploy:
     needs: [test, semgrep]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-    uses: jb-wooricapital/shared-workflows/.github/workflows/build-deploy.yml@main
-    with:
-      app-name: my-ai-app        # TODO: 앱 이름으로 변경
-    secrets: inherit
+    runs-on: ubuntu-latest
+    permissions:
+      id-token: write   # AWS OIDC role assume
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Configure AWS credentials (OIDC)
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::${{ vars.AWS_ACCOUNT_ID }}:role/${{ vars.ECR_ROLE }}
+          aws-region: ${{ vars.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Create ECR repository if not exists (with lifecycle policy)
+        run: |
+          aws ecr describe-repositories \
+            --repository-names ${{ env.APP_NAME }} \
+            --region ${{ vars.AWS_REGION }} 2>/dev/null || \
+          aws ecr create-repository \
+            --repository-name ${{ env.APP_NAME }} \
+            --region ${{ vars.AWS_REGION }} \
+            --image-scanning-configuration scanOnPush=true
+
+          aws ecr put-lifecycle-policy \
+            --repository-name ${{ env.APP_NAME }} \
+            --region ${{ vars.AWS_REGION }} \
+            --lifecycle-policy-text '{
+              "rules": [
+                {
+                  "rulePriority": 1,
+                  "description": "Expire untagged images after 7 days",
+                  "selection": {
+                    "tagStatus": "untagged",
+                    "countType": "sinceImagePushed",
+                    "countUnit": "days",
+                    "countNumber": 7
+                  },
+                  "action": { "type": "expire" }
+                },
+                {
+                  "rulePriority": 2,
+                  "description": "Keep last 10 tagged images",
+                  "selection": {
+                    "tagStatus": "any",
+                    "countType": "imageCountMoreThan",
+                    "countNumber": 10
+                  },
+                  "action": { "type": "expire" }
+                }
+              ]
+            }'
+
+      - name: Generate image tag (timestamp-shortsha)
+        id: tag
+        run: |
+          SHORT_SHA=$(echo ${{ github.sha }} | cut -c1-7)
+          TIMESTAMP=$(date +%Y%m%d%H%M%S)
+          TAG="${TIMESTAMP}-${SHORT_SHA}"
+          echo "tag=${TAG}" >> $GITHUB_OUTPUT
+          echo "Generated tag: ${TAG}"
+
+      - name: Build Docker image (local, push 전 Trivy 스캔용)
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ env.BUILD_CONTEXT }}
+          file: ${{ env.DOCKERFILE }}
+          push: false
+          load: true
+          tags: local/build:${{ steps.tag.outputs.tag }}
+
+      - name: Trivy image scan (vuln + secret + license)
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: local/build:${{ steps.tag.outputs.tag }}
+          format: table
+          severity: CRITICAL,HIGH
+          scanners: vuln,secret,license
+          exit-code: '1'
+          # CRITICAL/HIGH 발견 시 ECR push 자체 fail. 정책 완화는 '0' 으로.
+
+      - name: Push to ECR
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ env.BUILD_CONTEXT }}
+          file: ${{ env.DOCKERFILE }}
+          push: true
+          tags: |
+            ${{ vars.AWS_ACCOUNT_ID }}.dkr.ecr.${{ vars.AWS_REGION }}.amazonaws.com/${{ env.APP_NAME }}:${{ steps.tag.outputs.tag }}
+            ${{ vars.AWS_ACCOUNT_ID }}.dkr.ecr.${{ vars.AWS_REGION }}.amazonaws.com/${{ env.APP_NAME }}:latest
+
+      - name: Update image tag in GitOps repo
+        uses: actions/github-script@v7
+        with:
+          github-token: ${{ secrets.GITOPS_PAT }}
+          script: |
+            const owner = '${{ vars.GITOPS_OWNER }}';
+            const repo = '${{ vars.GITOPS_REPO }}';
+            const path = `k8s/apps/${{ env.APP_NAME }}/values.yaml`;
+            const tag = '${{ steps.tag.outputs.tag }}';
+            const image = `${{ vars.AWS_ACCOUNT_ID }}.dkr.ecr.${{ vars.AWS_REGION }}.amazonaws.com/${{ env.APP_NAME }}`;
+
+            let currentFile;
+            try {
+              currentFile = await github.rest.repos.getContent({ owner, repo, path });
+            } catch (e) {
+              core.setFailed(`values.yaml not found: ${path}. 먼저 values.yaml을 생성해주세요 (helm-values skill 또는 PR).`);
+              return;
+            }
+
+            const content = Buffer.from(currentFile.data.content, 'base64').toString('utf-8');
+            const updatedContent = content
+              .replace(/tag:\s*"?[\w\.\-]+"?/g, `tag: "${tag}"`)
+              .replace(/image:\s*"?[^"\n]+"?/g, `image: "${image}"`);
+
+            await github.rest.repos.createOrUpdateFileContents({
+              owner,
+              repo,
+              path,
+              message: `deploy(${{ env.APP_NAME }}): update image tag to ${tag}`,
+              content: Buffer.from(updatedContent).toString('base64'),
+              sha: currentFile.data.sha,
+              committer: {
+                name: 'github-actions[bot]',
+                email: 'github-actions[bot]@users.noreply.github.com'
+              }
+            });
+
+            core.info(`Updated ${path} with tag: ${tag}`);
 
   # ============================================
   # [모노레포 케이스] 한 레포에 BE + FE 같이 있는 경우
-  # 위의 `deploy` 하나 대신 아래처럼 job 을 앱 단위로 분리.
-  # 매핑 원칙: 1 ECR repo = 1 K8s app = 1 values.yaml = 1 Dockerfile
+  # 위의 `deploy` 를 컴포넌트당 하나씩 복제. env 의 APP_NAME / DOCKERFILE /
+  # BUILD_CONTEXT 만 바꾸기. 매핑 원칙: 1 ECR repo = 1 K8s app = 1 values.yaml
+  # = 1 Dockerfile.
   # ============================================
-  # deploy-api:
-  #   needs: test
+  # deploy-backend:
+  #   needs: [test, semgrep]
   #   if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-  #   uses: jb-wooricapital/shared-workflows/.github/workflows/build-deploy.yml@main
-  #   with:
-  #     app-name: myproject-api
-  #     dockerfile: ./backend/Dockerfile
-  #     context: ./backend
-  #   secrets: inherit
+  #   runs-on: ubuntu-latest
+  #   permissions:
+  #     id-token: write
+  #     contents: read
+  #   env:
+  #     APP_NAME: myproject-backend
+  #     DOCKERFILE: ./backend/Dockerfile
+  #     BUILD_CONTEXT: ./backend
+  #   steps:
+  #     # ... deploy job 의 모든 step 그대로 복사 ...
   #
-  # deploy-web:
-  #   needs: test
-  #   if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-  #   uses: jb-wooricapital/shared-workflows/.github/workflows/build-deploy.yml@main
-  #   with:
-  #     app-name: myproject-web
-  #     dockerfile: ./frontend/Dockerfile
-  #     context: ./frontend
-  #   secrets: inherit
+  # deploy-frontend:
+  #   ... (동일 패턴, env 만 frontend 로)
