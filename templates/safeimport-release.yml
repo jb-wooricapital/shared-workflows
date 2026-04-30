@@ -1,0 +1,81 @@
+# SafeImport 호환 Release 워크플로 — GitHub Release publish 시 자동 실행.
+# 5개 자산을 release 에 attach: image.tar / image.digest / trivy.json /
+# semgrep.json / sbom.cdx.json. SafeImport-Internet 이 release_tag 입력만으로
+# 이 자산들을 fetch 해서 검증 → 보안 승인 → 배포 승인 → 망연계 → Agent push.
+#
+# ★ 자산 이름 / 포맷은 SafeImport 가 정의한 contract 그대로여야 합니다.
+# 자세한 contract 정의: SafeImport/docs/release-contract.md
+#
+# 이 템플릿을 dev 의 앱 레포에 `.github/workflows/safeimport-release.yml`
+# 로 복사해두면 release publish 시 자동 실행됩니다. main-build-and-push (=
+# build-deploy reusable workflow) 와는 별개 흐름:
+#   - main 푸시: ECR 으로 — 사내 dev/스테이징 환경에서 사용
+#   - release publish: 이 워크플로 — 5개 자산 → SafeImport → 망연계 → Harbor
+
+name: safeimport-release
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write   # release 자산 업로드 권한
+
+jobs:
+  build-scan-attach:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build container image
+        env:
+          TAG: ${{ github.ref_name }}
+        run: |
+          IMAGE="ghcr.io/${{ github.repository }}:${TAG}"
+          docker build -t "$IMAGE" .
+          docker save "$IMAGE" -o image.tar
+          # config digest = SafeImport 가 image.tar 에서 재추출해 비교하는 값.
+          docker inspect "$IMAGE" --format '{{.Id}}' > image.digest
+
+      - name: Trivy scan (vuln + secret + license)
+        uses: aquasecurity/trivy-action@master
+        with:
+          input: image.tar
+          format: json
+          output: trivy.json
+          # license finding 은 trivy.json 의 Results[].Licenses[] 에 같이 떨어짐
+          # (별도 파일 X). SafeImport 는 자동 거부 안 시키고 보안팀 판단에 맡김.
+          scanners: vuln,secret,license
+          # exit-code 0 으로 둠 — release CI 자체는 깨뜨리지 않고, SafeImport
+          # 측 정책 (Critical CVE / Secrets) 에서 거절 결정.
+          exit-code: '0'
+
+      - name: Generate SBOM (CycloneDX)
+        uses: aquasecurity/trivy-action@master
+        with:
+          input: image.tar
+          format: cyclonedx
+          output: sbom.cdx.json
+          # SBOM 자체는 CVE 매칭 결과가 아닌 components 인벤토리.
+          # 중요 단말망 SafeImport-Agent 가 보관 → 미래 새 CVE 공시 시
+          # `trivy sbom` 으로 재스캔에 사용.
+
+      - name: Semgrep scan (source)
+        run: |
+          pip install --no-cache-dir semgrep
+          semgrep --config auto --json --output semgrep.json . || true
+          # 여기서는 finding 이 있어도 release 자체는 깨지 않음 — SafeImport
+          # 보안팀이 받아서 판단. PR check (app-ci-cd.yml 의 semgrep job) 에서
+          # 이미 한 번 걸러진 상태.
+
+      - name: Upload assets to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: |
+            image.tar
+            image.digest
+            trivy.json
+            semgrep.json
+            sbom.cdx.json

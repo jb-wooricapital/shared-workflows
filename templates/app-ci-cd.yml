@@ -56,11 +56,37 @@ jobs:
       - run: echo "테스트를 여기에 추가하세요"
 
   # ============================================
+  # 1.5단계: Semgrep SAST (공통 - 수정 불필요)
+  # 언어/프레임워크별 룰셋은 사내 컨벤션 (playground-infra/docs/cicd-conventions.md)
+  # 참조해서 stack. `--config auto` fallback 도 가능.
+  # ============================================
+  semgrep:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Semgrep SAST
+        run: |
+          pip install --no-cache-dir semgrep
+          # 공통 보안 룰 (모든 repo) + 언어별은 dev 가 추가
+          # 예 (Python+Django):
+          #   semgrep \
+          #     --config p/security-audit --config p/owasp-top-ten --config p/secrets \
+          #     --config p/python --config p/django \
+          #     --error
+          semgrep \
+            --config p/security-audit \
+            --config p/owasp-top-ten \
+            --config p/secrets \
+            --error
+          # `--error` 는 finding 1개라도 있으면 exit 1 — PR check 빨강.
+          # 정책 완화 (ERROR 만 fail) 는 `--severity ERROR --error`.
+
+  # ============================================
   # 2단계: 빌드 & 배포 (공통 - 수정 불필요)
   # main 브랜치 push 시에만 실행
   # ============================================
   deploy:
-    needs: test
+    needs: [test, semgrep]
     if: github.ref == 'refs/heads/main' && github.event_name == 'push'
     uses: jb-wooricapital/shared-workflows/.github/workflows/build-deploy.yml@main
     with:

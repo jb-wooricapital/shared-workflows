@@ -109,8 +109,30 @@ jobs:
           echo "tag=${TAG}" >> $GITHUB_OUTPUT
           echo "Generated tag: ${TAG}"
 
-      # 6. Docker build & push
-      - name: Build and push Docker image
+      # 6. Docker build (push 전, Trivy 스캔 단계로 분리)
+      - name: Build Docker image (local tag)
+        uses: docker/build-push-action@v5
+        with:
+          context: ${{ inputs.context }}
+          file: ${{ inputs.dockerfile }}
+          push: false
+          load: true
+          tags: local/build:${{ steps.tag.outputs.tag }}
+
+      # 7. Trivy 이미지 스캔 — vuln + secret + license. CRITICAL/HIGH 발견
+      # 시 ECR push 자체를 fail 시켜 main 브랜치에 취약 이미지 못 들어가게.
+      # 사내 정책 완화 시 exit-code: '0' 으로 두고 보고용으로만.
+      - name: Trivy image scan
+        uses: aquasecurity/trivy-action@master
+        with:
+          image-ref: local/build:${{ steps.tag.outputs.tag }}
+          format: table
+          severity: CRITICAL,HIGH
+          scanners: vuln,secret,license
+          exit-code: '1'
+
+      # 8. ECR push (스캔 통과 후)
+      - name: Push to ECR
         uses: docker/build-push-action@v5
         with:
           context: ${{ inputs.context }}
