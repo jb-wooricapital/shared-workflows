@@ -1,0 +1,100 @@
+# SafeImport 호환 Release 워크플로 (모노레포 매트릭스 버전)
+#
+# 한 GitHub Release 에 컴포넌트별 5 자산 (prefix 부여) 을 모두 attach. 예:
+#   backend-image.tar / backend-image.digest / backend-trivy.json /
+#     backend-semgrep.json / backend-sbom.cdx.json
+#   frontend-image.tar / frontend-image.digest / ...
+#
+# ★ 사용 전 주의 ★
+# 현재 SafeImport-Internet 의 verification 은 단일 컴포넌트 (prefix 없는 5
+# 자산) 만 인식합니다. 매트릭스 자산은 phase 2 의 SafeImport 가 들어와야
+# 자동 fetch 됩니다. 그 전엔 다음 두 가지 워크어라운드 중 선택:
+#
+#   A) 단일 컴포넌트만 운영 반입 — 이 매트릭스 템플릿 대신
+#      `safeimport-release.yml` 을 컴포넌트 dir 로 build context 변경해 사용
+#   B) 자산 prefix 없이 단일 컴포넌트만 골라 매트릭스 한 entry 만 활성화
+#
+# 매트릭스 그대로 쓸 거면 Phase 2 SafeImport 들어올 때까지 자산은 release 에
+# attach 되지만 SafeImport 신청은 막힘 — 그동안은 dev 환경 검증용으로만 가치.
+#
+# Phase 2 SafeImport 들어오면 다음 자산 contract 가 강제됩니다 (prefix 규칙):
+#   - 자산 이름: `<component>-image.tar`, `<component>-image.digest`, ...
+#   - <component> 는 K8s app / ECR repo 이름의 suffix (예: payment-service-backend
+#     앱이면 prefix 는 backend, NOT payment-service-backend)
+#   - SafeImport 의 Project 가 component 별 등록 (1 GitHub repo → N Project)
+
+name: safeimport-release-monorepo
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: write
+
+jobs:
+  build-scan-attach:
+    runs-on: ubuntu-latest
+    strategy:
+      # fail-fast: false — 한 컴포넌트 fail 해도 나머지는 계속 attach.
+      # 부분 attach 상태로 dev 가 release 자산 보고 어느 컴포넌트가 깨졌는지 확인 가능.
+      fail-fast: false
+      matrix:
+        component:
+          - { name: backend,  context: ./backend,  dockerfile: ./backend/Dockerfile }
+          - { name: frontend, context: ./frontend, dockerfile: ./frontend/Dockerfile }
+          # 컴포넌트 추가 시 여기 entry 추가.
+          # name 은 디렉토리 이름과 동일하게 (소문자+하이픈, 영문).
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Build container image
+        env:
+          TAG: ${{ github.ref_name }}
+          COMPONENT: ${{ matrix.component.name }}
+        run: |
+          IMAGE="ghcr.io/${{ github.repository }}-${COMPONENT}:${TAG}"
+          docker build \
+            -t "$IMAGE" \
+            -f "${{ matrix.component.dockerfile }}" \
+            "${{ matrix.component.context }}"
+          docker save "$IMAGE" -o "${COMPONENT}-image.tar"
+          docker inspect "$IMAGE" --format '{{.Id}}' > "${COMPONENT}-image.digest"
+
+      - name: Trivy scan (vuln + secret + license)
+        uses: aquasecurity/trivy-action@master
+        with:
+          input: ${{ matrix.component.name }}-image.tar
+          format: json
+          output: ${{ matrix.component.name }}-trivy.json
+          scanners: vuln,secret,license
+          exit-code: '0'
+
+      - name: Generate SBOM (CycloneDX)
+        uses: aquasecurity/trivy-action@master
+        with:
+          input: ${{ matrix.component.name }}-image.tar
+          format: cyclonedx
+          output: ${{ matrix.component.name }}-sbom.cdx.json
+
+      - name: Semgrep scan (component path)
+        env:
+          COMPONENT: ${{ matrix.component.name }}
+          CONTEXT: ${{ matrix.component.context }}
+        run: |
+          pip install --no-cache-dir semgrep
+          semgrep --config auto --json --output "${COMPONENT}-semgrep.json" "${CONTEXT}" || true
+          # context 만 스캔 — 컴포넌트별 격리.
+
+      - name: Upload component assets to release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: |
+            ${{ matrix.component.name }}-image.tar
+            ${{ matrix.component.name }}-image.digest
+            ${{ matrix.component.name }}-trivy.json
+            ${{ matrix.component.name }}-semgrep.json
+            ${{ matrix.component.name }}-sbom.cdx.json

@@ -40,25 +40,62 @@ You are setting up the standard playground CI/CD for the current repo. Two trigg
 ### 3) 사용자에게 한 묶음 질문
 
 대화 첫 답변에서 묶어서 질문:
-- **모노레포 컨펌** — 발견한 Dockerfile 위치 나열, 컴포넌트별 빌드/푸시 매트릭스로 갈지. (현재 build-deploy.yml 은 단일 컴포넌트 가정. 모노레포면 dev 가 deploy job 을 컴포넌트당 하나씩 분기 — 이미 app-ci-cd.yml 의 주석에 가이드 있음)
-- **앱 이름 컨펌** — 자동 감지한 repo 이름 보여주고 ECR repo 이름으로 사용할지
-- **테스트 명령** — 자동 감지한 거 보여주고 맞는지
-- **운영 반입 필요?** — yes 면 safeimport-release.yml 도 같이 깔기
+
+**(A) 단일 컴포넌트 (Dockerfile 1개)**:
+- 앱 이름 컨펌 — 자동 감지한 repo 이름 → ECR repo 이름 사용 OK?
+- 테스트 명령 — 자동 감지 결과 맞는지
+- 운영 반입 필요? — yes 면 `safeimport-release.yml` 도 깔기
+
+**(B) 모노레포 (Dockerfile 2개+)**:
+- **컴포넌트 매핑 컨펌** — 발견한 Dockerfile 위치를 표로 보여주고 각 컴포넌트의 ECR repo 이름 (`{repo}-{dir_name}` 디폴트) 사용 OK 인지
+- **운영 반입 필요한 컴포넌트** — none / one / all 중:
+  - `none`: safeimport-release 워크플로 안 깖
+  - `one`: 사용자가 컴포넌트 1개 선택 → 단일 `safeimport-release.yml` 을 그 컴포넌트의 build context 로 작성. **현 단계 권장** (SafeImport-Internet phase 2 전엔 이게 동작)
+  - `all`: `safeimport-release-monorepo.yml` 사용. 자산은 release 에 attach 되지만 SafeImport-Internet 이 매트릭스 자산 인식하는 건 phase 2 — 지금 신청은 막힘. dev 가 그 사실 인지하고 미래 대비로 깔겠다 하면 OK
+- 각 컴포넌트의 테스트 명령 (디폴트: 공통 테스트, 또는 컴포넌트당 분기 — package.json/pyproject.toml 위치 따라)
 
 기본값은 모두 추정하고 진행.
 
 ### 4) 템플릿 가져오기
 
-shared-workflows 의 두 템플릿이 canonical:
-- `https://github.com/jb-wooricapital/shared-workflows/blob/main/templates/app-ci-cd.yml`
-- `https://github.com/jb-wooricapital/shared-workflows/blob/main/templates/safeimport-release.yml`
+shared-workflows 의 템플릿 3종이 canonical:
+- `templates/app-ci-cd.yml` — PR + main 머지 (모든 케이스)
+- `templates/safeimport-release.yml` — 운영 반입 (단일 컴포넌트)
+- `templates/safeimport-release-monorepo.yml` — 운영 반입 (매트릭스, phase 2 의존)
 
-또는 로컬 clone 이 있으면 거기서 직접 (`workspaces/jb-wooricapital/shared-workflows/templates/`).
+로컬 clone (`workspaces/jb-wooricapital/shared-workflows/`) 또는 GitHub raw URL 에서 가져오기.
 
-가져온 후 다음 치환:
+**단일 컴포넌트 (A)**: 두 템플릿 (app-ci-cd + safeimport-release) 그대로 가져와서:
 - `app-name: my-ai-app` → 감지/확정한 앱 이름
 - semgrep job 의 `--config` 들 → 위 2) 에서 결정한 stack 으로 추가
 - 테스트 job 의 `echo "테스트를 여기에 추가하세요"` → 감지한 명령
+
+**모노레포 (B)**: app-ci-cd.yml 을 다음과 같이 변환:
+- 단일 `deploy:` job 을 컴포넌트당 분기 (`deploy-{component}:`):
+  ```yaml
+  deploy-backend:
+    needs: [test, semgrep]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    uses: jb-wooricapital/shared-workflows/.github/workflows/build-deploy.yml@main
+    with:
+      app-name: {repo}-backend
+      dockerfile: ./backend/Dockerfile
+      context: ./backend
+    secrets: inherit
+  deploy-frontend:
+    needs: [test, semgrep]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    uses: jb-wooricapital/shared-workflows/.github/workflows/build-deploy.yml@main
+    with:
+      app-name: {repo}-frontend
+      dockerfile: ./frontend/Dockerfile
+      context: ./frontend
+    secrets: inherit
+  ```
+- 운영 반입 모드:
+  - `one` → `safeimport-release.yml` 을 가져와 build 명령의 path 만 `./{선택한_컴포넌트}` 로 수정
+  - `all` → `safeimport-release-monorepo.yml` 을 가져와 matrix entries 를 발견한 컴포넌트로 채움
+  - `none` → release 워크플로 안 깖
 
 ### 5) 파일 쓰기
 
@@ -73,33 +110,21 @@ shared-workflows 의 두 템플릿이 canonical:
   - **Helm values.yaml** — 운영 / 사내 환경 배포 가려면 `playground-deploy/k8s/apps/<app-name>/values.yaml` 도 만들어야 함 — `helm-values` skill 사용 (별도 skill, 호출 필요)
   - **첫 release 발행** (운영 반입 깐 경우만) — `v0.1.0` 태그 → release publish → SafeImport 가 자동 감지
 
-## 모노레포 처리
+## 모노레포 컨벤션 요약
 
-`app-ci-cd.yml` 자체가 deploy job 을 모노레포 시 분기하는 패턴을 주석으로 안내함:
+자세한 네이밍 규칙은 [../../docs/cicd-conventions.md](../../docs/cicd-conventions.md) 의 "모노레포 네이밍 규칙" 섹션 참조. 핵심:
 
-```yaml
-deploy-api:
-  needs: [test, semgrep]
-  if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-  uses: jb-wooricapital/shared-workflows/.github/workflows/build-deploy.yml@main
-  with:
-    app-name: myproject-api
-    dockerfile: ./backend/Dockerfile
-    context: ./backend
-  secrets: inherit
+```
+컴포넌트 이름 = {repo}-{component_dir}
 
-deploy-web:
-  needs: [test, semgrep]
-  if: github.ref == 'refs/heads/main' && github.event_name == 'push'
-  uses: jb-wooricapital/shared-workflows/.github/workflows/build-deploy.yml@main
-  with:
-    app-name: myproject-web
-    dockerfile: ./frontend/Dockerfile
-    context: ./frontend
-  secrets: inherit
+GitHub repo:        jb-wooricapital/payment-service
+컴포넌트 dir:        backend, frontend, worker
+ECR repo:           payment-service-backend, ...
+K8s app:            payment-service-backend, ...
+values.yaml:        playground-deploy/k8s/apps/payment-service-backend/values.yaml, ...
 ```
 
-skill 이 모노레포 감지 시 단일 `deploy:` 를 위처럼 컴포넌트당 분기로 자동 변환. SafeImport 의 release 자산은 phase 2 까지는 단일 컴포넌트만 — 모노레포라도 운영 반입 하나만 우선 cover.
+skill 이 컴포넌트 감지하면 ECR repo 이름은 자동으로 `{repo}-{dir}` 로 추정. 사용자가 다르게 가고 싶으면 컨펌 단계에서 override.
 
 ## 핵심 보존 — SafeImport contract
 

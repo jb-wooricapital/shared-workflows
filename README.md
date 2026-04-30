@@ -13,7 +13,7 @@ AI Playground 사내 dev 가 본인 앱 repo 에서 사용하는 **GitHub Action
 | [`.github/workflows/`](.github/workflows/) | Reusable workflow (`build-deploy.yml`) | dev 의 앱 repo 가 `uses:` 로 호출 |
 | [`templates/`](templates/) | 워크플로 템플릿 (`app-ci-cd.yml`, `safeimport-release.yml`) | dev 의 `.github/workflows/` 에 복사 |
 | [`docs/`](docs/) | 사내 표준 컨벤션 (`cicd-conventions.md`) | 참고용 — Semgrep 룰셋 / ECR / branch protection |
-| [`skills/`](skills/) | Claude Code skill (`safeimport-cicd/`) | dev 의 `~/.claude/skills/` 에 복사하면 위 템플릿/컨벤션 자동 셋업 |
+| [`skills/`](skills/) | Claude Code skills (`safeimport-cicd/`, `helm-values/`) | dev 의 `~/.claude/skills/` 에 복사하면 워크플로 / values.yaml 자동 셋업 |
 
 ## 빠르게 시작 (skill 사용 — 권장)
 
@@ -21,17 +21,19 @@ dev PC 에 한 번만 설치:
 
 ```bash
 git clone https://github.com/jb-wooricapital/shared-workflows.git
-cp -r shared-workflows/skills/safeimport-cicd ~/.claude/skills/
+cp -r shared-workflows/skills/* ~/.claude/skills/
 ```
 
 그 다음 본인 앱 repo 안에서 Claude Code 호출:
 
 ```
-/safeimport-cicd
-또는 자연어: "사내 표준 CI/CD 깔아줘"
+/safeimport-cicd       # CI/CD 워크플로 깔기
+/helm-values           # 배포용 values.yaml 만들기
 ```
 
-skill 이 알아서 언어 / Dockerfile / 테스트 명령 감지하고 [docs/cicd-conventions.md](docs/cicd-conventions.md) 의 룰셋 적용해서 `.github/workflows/` 채워줌.
+또는 자연어 ("사내 표준 CI/CD 깔아줘", "배포 values 만들어줘") — skill 이 알아서 언어 / Dockerfile / 테스트 명령 감지하고 [docs/cicd-conventions.md](docs/cicd-conventions.md) 의 룰셋 적용.
+
+모노레포 (Dockerfile 2개+) 도 자동 감지 — 컴포넌트별 매트릭스 워크플로 / N 개 values.yaml 자동 생성.
 
 ## 수동 설치 (skill 없이)
 

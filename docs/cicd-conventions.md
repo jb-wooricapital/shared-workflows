@@ -81,6 +81,31 @@ semgrep --config p/security-audit --config p/python --config .semgrep.yml --erro
 | 태그 (main 머지) | `{timestamp}-{shortsha}` + `latest` (build-deploy.yml 자동) |
 | 태그 (운영 반입) | release tag 그대로 (예: `v1.2.3`) — SafeImport 가 그대로 Harbor 에 push |
 
+### 모노레포 네이밍 규칙 (모든 자동화의 전제)
+
+`payment-service` repo 안에 `backend/`, `frontend/`, `worker/` 컴포넌트가 있을 때 일관된 이름이 모든 레이어를 자동으로 연결합니다:
+
+```
+컴포넌트 이름 = {repo}-{component_dir}
+
+GitHub repo:        jb-wooricapital/payment-service
+컴포넌트 dir:        backend, frontend, worker
+ECR repo:           payment-service-backend, payment-service-frontend, payment-service-worker
+K8s app 이름:        payment-service-backend, ...  (Deployment / Service 의 metadata.name)
+K8s namespace:       apps  (전 컴포넌트 공통)
+values.yaml 위치:    playground-deploy/k8s/apps/payment-service-backend/values.yaml, ...
+Harbor (운영):        jb-wooricapital/payment-service-backend, ...
+SafeImport asset:    backend-image.tar, frontend-image.tar, worker-image.tar
+                     backend-trivy.json, frontend-trivy.json, ...
+                     (한 GitHub Release 에 N×5 자산 attach)
+```
+
+**규칙**:
+- 컴포넌트 dir 이름은 소문자+하이픈 (영문). 디렉토리명이 곧 ECR repo 의 suffix
+- 한 컴포넌트 = 한 Dockerfile = 한 ECR repo = 한 K8s app = 한 values.yaml
+- `app-ci-cd.yml` 의 `deploy:` job 을 컴포넌트당 하나씩 분기 (template 주석에 예시)
+- 운영 반입은 `safeimport-release-monorepo.yml` 매트릭스로 컴포넌트별 5 자산 (prefix 부여) 한 release 에 attach
+
 ## Branch protection 권장
 
 - `main` 은 **PR 만 허용** (직접 push 금지)
