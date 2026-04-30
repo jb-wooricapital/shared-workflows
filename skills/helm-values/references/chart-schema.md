@@ -15,7 +15,7 @@
 | 환경변수 | `app.env` (dict) | `{}` | 평문 OK 한 것만. 시크릿은 secretName 으로 |
 | K8s Secret | `app.secretName` | `""` | 미리 K8s 에 생성된 Secret 이름. envFrom 으로 주입됨 |
 | resources | `app.resources` | 언어별 추정 | Python: 200m/512Mi req, Java: 500m/1Gi req, Node/Go: 100m/256Mi req |
-| probes | `probes.enabled` | `true` (디폴트) | path 디폴트 `/healthz` — 앱이 다른 path 면 override |
+| probes | `probes.enabled` | `true` (디폴트) | path 디폴트 `/` — chart 가 별도 healthz 엔드포인트 요구 안 함. 앱이 전용 health endpoint 있으면 override |
 | securityContext | `securityContext.runAsNonRoot` | `true` | dev 가 root 권한 꼭 필요한 경우 false 로 override (legacy 이미지 등) |
 | imagePullSecrets | `imagePullSecrets` | `[]` | ECR OIDC 면 비워둠. cross-account / token 방식이면 secret 이름 |
 | Ingress | `ingress.enabled` / `ingress.host` | `enabled: true`, `host: {app-name}.playground.example.com` | dev 가 실제 도메인 알면 override |
